@@ -21,12 +21,12 @@ class RedditScraper:
             client_id=client_id,
             client_secret=client_secret,
             user_agent=user_agent,
-            request_timeout=30  # Increased timeout to 30 seconds
+            request_timeout=30  # Increased timeout to handle slow responses
         )
 
     def normalize_text(self, text):
         """
-        Converts full-width Unicode characters to normal ASCII characters.
+        Normalizes text by converting full-width Unicode characters to ASCII.
 
         :param text: The input text to normalize
         :return: Normalized text or None if the input is empty
@@ -37,21 +37,22 @@ class RedditScraper:
 
     def extract_links_and_images(self, text):
         """
-        Extracts image links (.jpg, .png, etc.) and other regular links from the given text.
+        Extracts image and regular links from the given text.
 
         :param text: The input text to extract links from
-        :return: A string of links/images found or "No links or images" if none are found
+        :return: A string of found links/images or a message if none are found
         """
         if text:
             image_links = re.findall(r'(https?://\S+\.(?:jpg|jpeg|png|gif))', text)
             other_links = re.findall(r'(https?://\S+)', text)
 
+            # Return the first found links or a default message
             if image_links:
-                return ', '.join(image_links)  # Join multiple image links
+                return ', '.join(image_links)
             elif other_links:
-                return ', '.join(other_links)  # Join other links if no images
+                return ', '.join(other_links)
 
-        return "No links or images"  # Explicitly return this if no links or images are found
+        return "No links or images found."  # Default message if no links or images are found
 
     def scrape_subreddit(self, subreddit, total_limit):
         """
@@ -71,61 +72,55 @@ class RedditScraper:
             submission_count = 0
             start_time = time.time()
 
-            for submission in subreddit_obj.top(limit=None):
+            for submission in subreddit_obj.top(limit=None):  # Fetch top posts
                 logging.info(f"Processing submission: {submission.title} (ID: {submission.id})")
 
                 if submission_count >= total_limit:
                     break
 
-                if submission.num_comments > 1:
-                    normalized_title = self.normalize_text(submission.title)
-                    normalized_selftext = self.normalize_text(submission.selftext)
-
+                if submission.num_comments > 1:  # Only process posts with comments
                     post_info = {
-                        "Post ID": submission.id or None,
-                        "Title": normalized_title or None,
-                        "Self Text": normalized_selftext or None,
+                        "Post ID": submission.id,
+                        "Title": self.normalize_text(submission.title),
+                        "Self Text": self.normalize_text(submission.selftext),
                         "Post Type": submission.url.split('.')[-1] if submission.url else None,
-                        "Upvotes": submission.score if submission.score is not None else None,
-                        "Comments Count": submission.num_comments if submission.num_comments is not None else None,
-                        "Author": submission.author.name if submission.author and submission.author.name else None,  # Check author
-                        "Created Time (UTC)": submission.created_utc if submission.created_utc else None,
-                        "Link/Image": self.extract_links_and_images(submission.selftext)  # Explicitly set to None if no link/image found
+                        "Upvotes": submission.score,
+                        "Comments Count": submission.num_comments,
+                        "Author": submission.author.name if submission.author else None,
+                        "Created Time (UTC)": submission.created_utc,
+                        "Link/Image": self.extract_links_and_images(submission.selftext)
                     }
                     posts_data.append(post_info)
 
                     submission.comments.replace_more(limit=None)  # Fetch all comments
                     for comment in submission.comments.list():
-                        normalized_body = self.normalize_text(comment.body)
-
                         comment_info = {
-                            "Post ID": submission.id or None,
-                            "Comment ID": comment.id or None,
-                            "Comment Body": normalized_body or None,
-                            "Comment Upvotes": comment.score if comment.score is not None else None,
-                            "Comment Created Time (UTC)": comment.created_utc if comment.created_utc else None,
-                            "Comment Author": comment.author.name if comment.author and comment.author.name else None,  # Check author
-                            "Link/Image": self.extract_links_and_images(comment.body)  # Explicitly set to None if no link/image found
+                            "Post ID": submission.id,
+                            "Comment ID": comment.id,
+                            "Comment Body": self.normalize_text(comment.body),
+                            "Comment Upvotes": comment.score,
+                            "Comment Created Time (UTC)": comment.created_utc,
+                            "Comment Author": comment.author.name if comment.author else None,
+                            "Link/Image": self.extract_links_and_images(comment.body)
                         }
                         comments_data.append(comment_info)
 
                     submission_count += 1
 
-                    # Check the time and sleep if necessary
+                    # Check the elapsed time and pause if necessary
                     elapsed_time = time.time() - start_time
-                    if submission_count % 90 == 0:
-                        if elapsed_time < 60:
-                            time.sleep(60 - elapsed_time)
-                        start_time = time.time()
+                    if submission_count % 90 == 0 and elapsed_time < 60:
+                        time.sleep(60 - elapsed_time)  # Sleep to prevent rate limiting
+                        start_time = time.time()  # Reset start time
 
         except praw.exceptions.APIException as e:
             if e.error_type == "RATELIMIT":
                 wait_time = int(e.message.split(' ')[-2])
                 logging.info(f"Rate limit exceeded. Sleeping for {wait_time + 10} seconds.")
                 time.sleep(wait_time + 10)  # Sleep with a buffer
-                return self.scrape_subreddit(subreddit, total_limit)
+                return self.scrape_subreddit(subreddit, total_limit)  # Retry scraping
             else:
-                logging.error(f"An error occurred while scraping subreddit {subreddit}: {e}")
+                logging.error(f"API error while scraping subreddit {subreddit}: {e}")
 
         except Exception as e:  # Catch all other exceptions
             logging.error(f"An unexpected error occurred: {e}")
@@ -147,7 +142,7 @@ class RedditScraper:
             except Exception as e:
                 logging.error(f"Error saving CSV file: {e}")
 
-    def scrape_and_save(self, subreddits, limit=None, output_folder="C:\\Users\\Asus\\Documents\\workreddit\\reddit_data"):
+    def scrape_and_save(self, subreddits, limit=None, output_folder="reddit_data"):
         """
         Scrapes the specified subreddits and saves the data to CSV files.
 
@@ -157,21 +152,20 @@ class RedditScraper:
         """
         for subreddit in subreddits:
             logging.info(f"Scraping subreddit: {subreddit}")
-            posts_data, comments_data = [], []
-            folder_path = f"{output_folder}/{subreddit}"
+            folder_path = os.path.join(output_folder, subreddit)
             os.makedirs(folder_path, exist_ok=True)
 
             try:
                 posts_data, comments_data = self.scrape_subreddit(subreddit, limit)
-                self.save_to_csv(posts_data, f"{folder_path}/{subreddit}_posts.csv")
-                self.save_to_csv(comments_data, f"{folder_path}/{subreddit}_comments.csv")
+                self.save_to_csv(posts_data, os.path.join(folder_path, f"{subreddit}_posts.csv"))
+                self.save_to_csv(comments_data, os.path.join(folder_path, f"{subreddit}_comments.csv"))
 
             except Exception as e:
-                logging.error(f"An error occurred: {e}")
+                logging.error(f"An error occurred while scraping {subreddit}: {e}")
             finally:
                 # Always save backups of the data
-                self.save_to_csv(posts_data, f"{folder_path}/{subreddit}_posts_backup.csv")
-                self.save_to_csv(comments_data, f"{folder_path}/{subreddit}_comments_backup.csv")
+                self.save_to_csv(posts_data, os.path.join(folder_path, f"{subreddit}_posts_backup.csv"))
+                self.save_to_csv(comments_data, os.path.join(folder_path, f"{subreddit}_comments_backup.csv"))
 
-            # Pause between subreddits
+            # Pause between subreddits to avoid overwhelming the API
             time.sleep(5)  # Sleep for 5 seconds between different subreddit scrapes
